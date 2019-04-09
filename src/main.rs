@@ -42,6 +42,9 @@ fn main() -> Result<(), Error> {
                     .arg(Arg::with_name("overwrite")
                          .long("overwrite")
                          .help("Overwrite output file, if it exists."))
+                    .arg(Arg::with_name("invert")
+                         .long("invert")
+                         .help("Output a log file containing all feeds *but* the specified id."))
         )
         .subcommand(SubCommand::with_name("view")
                     .about("View a flumedb offset log file")
@@ -57,6 +60,7 @@ fn main() -> Result<(), Error> {
             let out_path = sub_m.value_of("out").unwrap();
             let feed_id = sub_m.value_of("id").unwrap();
             let overwrite = sub_m.is_present("overwrite");
+            let invert = sub_m.is_present("invert");
 
             if !overwrite && Path::new(out_path).exists() {
                 eprintln!("Output path `{}` exists.", out_path);
@@ -82,7 +86,11 @@ fn main() -> Result<(), Error> {
             eprintln!(" from offset log at path:     {}", in_path);
             eprintln!(" into new offset log at path: {}", out_path);
 
-            copy_log_entries_using_author(in_log, out_log, |id| id == feed_id)
+            if invert {
+                copy_log_entries_using_author(in_log, out_log, |id| id != feed_id)
+            } else {
+                copy_log_entries_using_author(in_log, out_log, |id| id == feed_id)
+            }
         },
 
         ("view", Some(sub_m)) => {
