@@ -1,10 +1,11 @@
+use std::fs::{OpenOptions};
 use std::io::{self, stdin, stdout, Write};
 use std::path::Path;
 
 use clap::{Arg, App, SubCommand};
 
 use flumedb::flume_log::{Error, FlumeLog};
-use flumedb::offset_log::{BidirIterator, OffsetLog};
+use flumedb::offset_log::{BidirIterator, OffsetLog, LogEntry};
 
 use serde_json::{Value, to_string_pretty};
 
@@ -69,13 +70,19 @@ fn main() -> Result<(), Error> {
                 return Ok(());
             }
 
-            let out_log = OffsetLog::<u32>::new(out_path)?;
+            let file = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&out_path)?;
+
+            let out_log = OffsetLog::<u32>::from_file(file)?;
 
             println!("Copying feed id: {}", feed_id);
             eprintln!(" from offset log at path:     {}", in_path);
             eprintln!(" into new offset log at path: {}", out_path);
 
-            extract_feed(in_log, out_log, feed_id)
+            copy_log_entries_using_author(in_log, out_log, |id| id == feed_id)
         },
 
         ("view", Some(sub_m)) => {
@@ -91,9 +98,32 @@ fn main() -> Result<(), Error> {
     }
 }
 
-fn extract_feed(in_log: OffsetLog<u32>, mut out_log: OffsetLog<u32>, feed_id: &str)
-                -> Result<(), Error> {
+// copy if author id matches predicate
+fn copy_log_entries_using_author<F>(in_log: OffsetLog<u32>, out_log: OffsetLog<u32>, should_write: F)
+                                    -> Result<(), Error>
+where
+    F: Fn(&str) -> bool,
+{
+    copy_log_entries(in_log, out_log, |e| {
+        let v: Result<Value, serde_json::error::Error>
+            = serde_json::from_slice(&e.data);
 
+        match v {
+            Ok(v) => v.get("value")
+                .and_then(|v| v.get("author"))
+                .and_then(|v| v.as_str())
+                .map_or(false, |v| should_write(v)),
+            Err(_) => false,
+        }
+    })
+}
+
+
+fn copy_log_entries<F>(in_log: OffsetLog<u32>, mut out_log: OffsetLog<u32>, should_write: F)
+                        -> Result<(), Error>
+where
+    F: Fn(&LogEntry) -> bool,
+{
     let stdout = io::stdout();
     let mut handle = stdout.lock();
 
@@ -103,20 +133,9 @@ fn extract_feed(in_log: OffsetLog<u32>, mut out_log: OffsetLog<u32>, feed_id: &s
         return Ok(());
     }
 
-
     let mut iter = in_log.iter().map(|e| {
-        let v: Result<Value, serde_json::error::Error>
-            = serde_json::from_slice(&e.data);
-
-        let should_write = match v {
-            Ok(v) => v.get("value")
-                .and_then(|v| v.get("author"))
-                .and_then(|v| v.as_str())
-                .map_or(false, |s| s == feed_id),
-            Err(_) => false,
-        };
-
-        (e, should_write)
+        let sw = should_write(&e);
+        (e, sw)
     });
 
     let mut count: usize = 0;
