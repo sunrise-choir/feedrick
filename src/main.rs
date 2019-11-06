@@ -2,8 +2,8 @@ use std::fs::OpenOptions;
 use std::io::{self, stdin, stdout, Write};
 use std::path::Path;
 
-use rayon::prelude::*;
 use clap::{App, Arg, SubCommand};
+use rayon::prelude::*;
 
 use flumedb::flume_log::{Error, FlumeLog};
 use flumedb::offset_log::{BidirIterator, LogEntry, OffsetLog};
@@ -157,26 +157,22 @@ fn main() -> Result<(), Error> {
                 return Ok(());
             }
 
-            let mut entries = in_log
-                .iter()
-                .forward()
-                .collect::<Vec<_>>();
-
-            entries
-                .par_sort_unstable_by(|a, b| {
-                    let a_time = get_entry_timestamp(a);
-                    let b_time = get_entry_timestamp(b);
-                    a_time
-                        .partial_cmp(&b_time)
-                        .unwrap()
-                });
-
-
             eprintln!(" from offset log at path:     {}", in_path);
             eprintln!(" into new offset log at path: {}", out_path);
 
-            entries.iter().for_each(|entry|{
-                out_log.append(&entry.data).unwrap();
+            let mut entries = in_log
+                .iter()
+                .forward()
+                .map(|entry| (get_entry_timestamp(&entry), entry.offset))
+                .collect::<Vec<_>>();
+
+            entries.par_sort_unstable_by(|(a, _), (b, _)| a.partial_cmp(&b).unwrap());
+
+            eprintln!(" sorted {} entries, writing out to new offset file", entries.len());
+
+            entries.iter().for_each(|(_, offset)| {
+                let entry = in_log.get(*offset).unwrap();
+                out_log.append(&entry).unwrap();
             });
 
             Ok(())
