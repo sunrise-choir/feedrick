@@ -14,6 +14,7 @@ FLAGS:
 SUBCOMMANDS:
     extract    Copy the feed for a single id into a separate file.
     help       Prints this message or the help of the given subcommand(s)
+    sort       Copy all the feeds and sort by asserted time
     view       View a flumedb offset log file
 ```
 
@@ -47,6 +48,26 @@ FLAGS:
 
 OPTIONS:
     -f, --feed <id>    feed (user) id (eg. "@N/vWpVVdD..."
+    -i, --in <in>      source offset log file
+    -o, --out <out>    destination path
+```
+
+
+- `sort` all the messages in an offset file by `assertedTimestamp`
+```
+feedrick sort --in ~/.ssb/flume/log.offset --out /tmp/sorted.offset 
+```
+
+```
+USAGE:
+    feedrick sort [FLAGS] --in <in> --out <out>
+
+FLAGS:
+    -h, --help         Prints help information
+        --overwrite    Overwrite output file, if it exists.
+    -V, --version      Prints version information
+
+OPTIONS:
     -i, --in <in>      source offset log file
     -o, --out <out>    destination path
 ```
