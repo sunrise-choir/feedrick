@@ -167,6 +167,7 @@ fn main() -> Result<(), Error> {
         }
         ("validate", Some(sub_m)) => {
             let mut previous_messages_by_author = HashMap::<String, Vec<u8>>::new();
+            let errors_by_author = HashMap::<String, Vec<ValidationError>>::new();
             let in_path = sub_m.value_of("in").unwrap();
             let in_log = OffsetLog::<u32>::open_read_only(in_path)?;
             if in_log.end() == 0 {
@@ -174,7 +175,8 @@ fn main() -> Result<(), Error> {
                 return Ok(());
             }
 
-            let errors = in_log
+
+            let (oks, errors ): (Vec<_>, Vec<_>)  = in_log
                 .iter()
                 .forward()
                 .map(|msg| {
@@ -182,21 +184,41 @@ fn main() -> Result<(), Error> {
                     let author = parsed_msg.value.author;
                     let previous = previous_messages_by_author.get(&author);
                     let result = validate_hash_chain(&msg.data, previous.as_deref().map(|p| &**p));
-                    previous_messages_by_author.insert(author, msg.data);
-                    result
+                    previous_messages_by_author.insert(author.clone(), msg.data);
+                    (result, author)
                 })
-                .filter(|res| !res.is_ok())
-                .collect::<Vec<_>>();
+                .partition(|(res, _)| res.is_ok());
 
-            if errors.len() == 0 {
-                eprintln!("All messages ok");
+            let errors_len = errors.len();
+            let summary = errors
+                .into_iter()
+                .map(|(res, author)| (res.err().unwrap(), author))
+                .fold(errors_by_author, |mut author_errors, (error, author)| {
+                    if author_errors.contains_key(&author) {
+                        let author_error = author_errors.get_mut(&author).unwrap();
+                        author_error.push(error);
+                    } else {
+                        let value = vec![error];
+                        author_errors.insert(author, value);
+                    };
+
+                    author_errors
+                });
+
+            if summary.len() == 0 {
+                println!("All messages ok");
             } else {
-                eprintln!("Not all messages ok. Found {} errors.", errors.len());
-                errors.iter().for_each(|ref error|{
-                    if let Err(ValidationError::ActualHashDidNotMatchKey{message}) = error{
-                        eprintln!("Hash error on message:\n{}", std::str::from_utf8(message).unwrap());
+                println!(
+                    "Not all messages ok. ",
+                );
+                println!("There were {} entries that were ok, but {} authors had a total of {} messages with errors:", oks.len(), summary.len(), errors_len );
+                    
+                let mut sorted_errors = summary.keys().collect::<Vec<_>>();
 
-                    }
+                sorted_errors.par_sort_unstable_by(|a, b| a.cmp(b));
+
+                sorted_errors.iter().for_each(|authors| {
+                    println!("{}", authors);
                 })
             }
 
