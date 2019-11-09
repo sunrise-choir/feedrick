@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::{self, stdin, stdout, Write};
 use std::path::Path;
@@ -8,7 +10,10 @@ use rayon::prelude::*;
 use flumedb::flume_log::{Error, FlumeLog};
 use flumedb::offset_log::{BidirIterator, LogEntry, OffsetLog};
 
+use itertools::Itertools;
 use serde_json::{to_string_pretty, Value};
+use ssb_validate::{validate_hash_chain, Error as ValidationError};
+use ssb_verify_signatures::{par_verify_batch, verify};
 
 use termion::event::Key;
 use termion::input::TermRead;
@@ -43,6 +48,36 @@ fn main() -> Result<(), Error> {
                         .long("overwrite")
                         .help("Overwrite output file, if it exists."),
                 ),
+        )
+        .subcommand(
+            SubCommand::with_name("validate")
+                .about("Validate the hash chains of feeds for correct hashes, sequences and previous values")
+                .arg(
+                    Arg::with_name("in")
+                        .long("in")
+                        .short("i")
+                        .required(true)
+                        .takes_value(true)
+                        .help("source offset log file"),
+                )
+        )
+        .subcommand(
+            SubCommand::with_name("verify")
+                .about("Verify all the messages in the log are in fact signed correctly")
+                .arg(
+                    Arg::with_name("in")
+                        .long("in")
+                        .short("i")
+                        .required(true)
+                        .takes_value(true)
+                        .help("source offset log file"),
+                )
+                .arg(
+                    Arg::with_name("parallel")
+                        .long("parallel")
+                        .short("p")
+                        .help("verify messages using multi cpus and SIMD instructions"),
+                    )
         )
         .subcommand(
             SubCommand::with_name("extract")
@@ -95,6 +130,78 @@ fn main() -> Result<(), Error> {
         .get_matches();
 
     match app_m.subcommand() {
+        ("verify", Some(sub_m)) => {
+            let in_path = sub_m.value_of("in").unwrap();
+            let parallel = sub_m.is_present("parallel");
+            let in_log = OffsetLog::<u32>::open_read_only(in_path)?;
+            if in_log.end() == 0 {
+                eprintln!("Input offset log file is empty.");
+                return Ok(());
+            }
+
+            let ok = if parallel {
+                std::iter::Iterator::map(in_log.iter().forward(), |entry| entry.data)
+                    .chunks(2000)
+                    .into_iter()
+                    .map(|chunk| {
+                        let msgs = chunk.collect::<Vec<_>>();
+
+                        par_verify_batch(&msgs[..]).is_ok()
+                    })
+                    .all(|ok| ok)
+            } else {
+                in_log
+                    .iter()
+                    .forward()
+                    .map(|msg| verify(&msg.data).is_ok())
+                    .all(|ok| ok)
+            };
+
+            if ok {
+                eprintln!("All messages ok");
+            } else {
+                eprintln!("Not all messages ok");
+            }
+
+            Ok(())
+        }
+        ("validate", Some(sub_m)) => {
+            let mut previous_messages_by_author = HashMap::<String, Vec<u8>>::new();
+            let in_path = sub_m.value_of("in").unwrap();
+            let in_log = OffsetLog::<u32>::open_read_only(in_path)?;
+            if in_log.end() == 0 {
+                eprintln!("Input offset log file is empty.");
+                return Ok(());
+            }
+
+            let errors = in_log
+                .iter()
+                .forward()
+                .map(|msg| {
+                    let parsed_msg: SsbMessage = serde_json::from_slice(&msg.data).unwrap();
+                    let author = parsed_msg.value.author;
+                    let previous = previous_messages_by_author.get(&author);
+                    let result = validate_hash_chain(&msg.data, previous.as_deref().map(|p| &**p));
+                    previous_messages_by_author.insert(author, msg.data);
+                    result
+                })
+                .filter(|res| !res.is_ok())
+                .collect::<Vec<_>>();
+
+            if errors.len() == 0 {
+                eprintln!("All messages ok");
+            } else {
+                eprintln!("Not all messages ok. Found {} errors.", errors.len());
+                errors.iter().for_each(|ref error|{
+                    if let Err(ValidationError::ActualHashDidNotMatchKey{message}) = error{
+                        eprintln!("Hash error on message:\n{}", std::str::from_utf8(message).unwrap());
+
+                    }
+                })
+            }
+
+            Ok(())
+        }
         ("extract", Some(sub_m)) => {
             let in_path = sub_m.value_of("in").unwrap();
             let out_path = sub_m.value_of("out").unwrap();
@@ -168,7 +275,10 @@ fn main() -> Result<(), Error> {
 
             entries.par_sort_unstable_by(|(a, _), (b, _)| a.partial_cmp(&b).unwrap());
 
-            eprintln!(" sorted {} entries, writing out to new offset file", entries.len());
+            eprintln!(
+                " sorted {} entries, writing out to new offset file",
+                entries.len()
+            );
 
             entries.iter().for_each(|(_, offset)| {
                 let entry = in_log.get(*offset).unwrap();
@@ -332,4 +442,14 @@ fn print_lines<W: Write>(s: &str, stdout: &mut W) -> io::Result<()> {
         write!(stdout, "\n\r{}", &line)?;
     }
     Ok(())
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct SsbMessageValue {
+    author: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct SsbMessage {
+    value: SsbMessageValue,
 }
