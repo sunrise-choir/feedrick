@@ -141,6 +141,7 @@ fn main() -> Result<(), Error> {
 
             let ok = if parallel {
                 std::iter::Iterator::map(in_log.iter().forward(), |entry| entry.data)
+                    .filter(|data| !data.iter().all(|b| *b == 0))
                     .chunks(2000)
                     .into_iter()
                     .map(|chunk| {
@@ -153,7 +154,9 @@ fn main() -> Result<(), Error> {
                 in_log
                     .iter()
                     .forward()
-                    .map(|msg| verify(&msg.data).is_ok())
+                    .map(|entry| entry.data)
+                    .filter(|data| !data.iter().all(|b| *b == 0))
+                    .map(|data| verify(&data).is_ok())
                     .all(|ok| ok)
             };
 
@@ -179,9 +182,14 @@ fn main() -> Result<(), Error> {
             let (oks, errors ): (Vec<_>, Vec<_>)  = in_log
                 .iter()
                 .forward()
-                .map(|msg| {
-                    let parsed_msg: SsbMessage = serde_json::from_slice(&msg.data).unwrap();
-                    let author = parsed_msg.value.author;
+                .filter(|msg| !msg.data.iter().all(|b| *b == 0))
+                .map(|msg|{
+                    let res = serde_json::from_slice::<SsbMessage>(&msg.data);
+                    (res, msg)
+                })
+                .filter(|(res, _)| res.is_ok())
+                .map(|(parsed_msg, msg)| {
+                    let author = parsed_msg.unwrap().value.author;
                     let previous = previous_messages_by_author.get(&author);
                     let result = validate_hash_chain(&msg.data, previous.as_deref().map(|p| &**p));
                     previous_messages_by_author.insert(author.clone(), msg.data);
@@ -212,7 +220,6 @@ fn main() -> Result<(), Error> {
                     "Not all messages ok. ",
                 );
                 println!("There were {} entries that were ok, but {} authors had a total of {} messages with errors:", oks.len(), summary.len(), errors_len );
-                    
                 let mut sorted_errors = summary.keys().collect::<Vec<_>>();
 
                 sorted_errors.par_sort_unstable_by(|a, b| a.cmp(b));
