@@ -184,7 +184,9 @@ fn main() -> Result<(), Error> {
                     let author = parsed_msg.value.author;
                     let previous = previous_messages_by_author.get(&author);
                     let result = validate_hash_chain(&msg.data, previous.as_deref().map(|p| &**p));
+
                     previous_messages_by_author.insert(author.clone(), msg.data);
+
                     (result, author)
                 })
                 .partition(|(res, _)| res.is_ok());
