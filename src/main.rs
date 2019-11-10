@@ -141,6 +141,7 @@ fn main() -> Result<(), Error> {
 
             let ok = if parallel {
                 std::iter::Iterator::map(in_log.iter().forward(), |entry| entry.data)
+                    .filter(|data| !data.iter().all(|b| *b == 0))
                     .chunks(2000)
                     .into_iter()
                     .map(|chunk| {
@@ -153,7 +154,9 @@ fn main() -> Result<(), Error> {
                 in_log
                     .iter()
                     .forward()
-                    .map(|msg| verify(&msg.data).is_ok())
+                    .map(|entry| entry.data)
+                    .filter(|data| !data.iter().all(|b| *b == 0))
+                    .map(|data| verify(&data).is_ok())
                     .all(|ok| ok)
             };
 
@@ -175,20 +178,21 @@ fn main() -> Result<(), Error> {
                 return Ok(());
             }
 
-            let (oks, errors ): (Vec<_>, Vec<_>)  = std::iter::Iterator::map(in_log.iter(), 
-                |msg| {
-                    let parsed_msg: SsbMessage = serde_json::from_slice(&msg.data).unwrap();
-                    let author = parsed_msg.value.author;
+            let (oks, errors): (Vec<_>, Vec<_>) =
+                std::iter::Iterator::filter(in_log.iter(), |msg| !msg.data.iter().all(|b| *b == 0))
+                    .map(|msg| {
+                        let parsed_msg: SsbMessage = serde_json::from_slice(&msg.data).unwrap();
+                        let author = parsed_msg.value.author;
 
-                    let previous  = previous_messages_by_author.remove(&author);
-                    
-                    let result = validate_hash_chain(&msg.data, previous.as_deref());
+                        let previous = previous_messages_by_author.remove(&author);
 
-                    previous_messages_by_author.insert(author.clone(), msg.data);
+                        let result = validate_hash_chain(&msg.data, previous.as_deref());
 
-                    (result, author)
-                })
-                .partition(|(res, _)| res.is_ok());
+                        previous_messages_by_author.insert(author.clone(), msg.data);
+
+                        (result, author)
+                    })
+                    .partition(|(res, _)| res.is_ok());
 
             let errors_len = errors.len();
             let summary = errors
@@ -209,11 +213,8 @@ fn main() -> Result<(), Error> {
             if summary.len() == 0 {
                 println!("All messages ok");
             } else {
-                println!(
-                    "Not all messages ok. ",
-                );
+                println!("Not all messages ok. ",);
                 println!("There were {} entries that were ok, but {} authors had a total of {} messages with errors:", oks.len(), summary.len(), errors_len );
-                    
                 let mut sorted_errors = summary.keys().collect::<Vec<_>>();
 
                 sorted_errors.par_sort_unstable_by(|a, b| a.cmp(b));
