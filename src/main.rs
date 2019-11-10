@@ -175,15 +175,14 @@ fn main() -> Result<(), Error> {
                 return Ok(());
             }
 
-
-            let (oks, errors ): (Vec<_>, Vec<_>)  = in_log
-                .iter()
-                .forward()
-                .map(|msg| {
+            let (oks, errors ): (Vec<_>, Vec<_>)  = std::iter::Iterator::map(in_log.iter(), 
+                |msg| {
                     let parsed_msg: SsbMessage = serde_json::from_slice(&msg.data).unwrap();
                     let author = parsed_msg.value.author;
-                    let previous = previous_messages_by_author.get(&author);
-                    let result = validate_hash_chain(&msg.data, previous.as_deref().map(|p| &**p));
+
+                    let previous  = previous_messages_by_author.remove(&author);
+                    
+                    let result = validate_hash_chain(&msg.data, previous.as_deref());
 
                     previous_messages_by_author.insert(author.clone(), msg.data);
 
@@ -365,7 +364,7 @@ where
         return Ok(());
     }
 
-    let mut iter = in_log.iter().map(|e| {
+    let mut iter = BidirIterator::map(in_log.iter(), |e| {
         let sw = should_write(&e);
         (e, sw)
     });
@@ -401,7 +400,7 @@ fn view_log(log: OffsetLog<u32>) -> Result<(), Error> {
     let stdin = stdin();
     let mut stdout = stdout().into_raw_mode()?;
 
-    let mut iter = log.iter().map(|e| {
+    let mut iter = BidirIterator::map(log.iter(), |e| {
         let v = serde_json::from_slice(&e.data).unwrap();
         (e, v)
     });
