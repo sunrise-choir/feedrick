@@ -6,7 +6,8 @@ use clap::{App, Arg, SubCommand};
 use rayon::prelude::*;
 
 use flumedb::flume_log::{Error, FlumeLog};
-use flumedb::offset_log::{BidirIterator, LogEntry, OffsetLog};
+use flumedb::log_entry::LogEntry;
+use flumedb::offset_log::{BidirIterator, OffsetLog};
 
 use serde_json::{to_string_pretty, Value};
 
@@ -162,13 +163,15 @@ fn main() -> Result<(), Error> {
 
             let mut entries = in_log
                 .iter()
-                .forward()
                 .map(|entry| (get_entry_timestamp(&entry), entry.offset))
                 .collect::<Vec<_>>();
 
             entries.par_sort_unstable_by(|(a, _), (b, _)| a.partial_cmp(&b).unwrap());
 
-            eprintln!(" sorted {} entries, writing out to new offset file", entries.len());
+            eprintln!(
+                " sorted {} entries, writing out to new offset file",
+                entries.len()
+            );
 
             entries.iter().for_each(|(_, offset)| {
                 let entry = in_log.get(*offset).unwrap();
@@ -231,7 +234,7 @@ where
         return Ok(());
     }
 
-    let mut iter = in_log.iter().map(|e| {
+    let iter = in_log.iter().map(|e| {
         let sw = should_write(&e);
         (e, sw)
     });
@@ -240,7 +243,7 @@ where
     let mut prev_pct: usize = 0;
     let mut bytes: u64 = 0;
 
-    for (e, should_write) in iter.forward() {
+    for (e, should_write) in iter {
         let pct = (100.0 * (e.offset as f64 / in_len as f64)) as usize;
 
         if should_write {
@@ -267,7 +270,7 @@ fn view_log(log: OffsetLog<u32>) -> Result<(), Error> {
     let stdin = stdin();
     let mut stdout = stdout().into_raw_mode()?;
 
-    let mut iter = log.iter().map(|e| {
+    let mut iter = log.bidir_iter().map(|e| {
         let v = serde_json::from_slice(&e.data).unwrap();
         (e, v)
     });
