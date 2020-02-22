@@ -286,20 +286,16 @@ where
 }
 
 fn check_log(log: OffsetLog<u32>) -> Result<(), Error> {
-    let stdin = stdin();
-    let mut stdout = stdout().into_raw_mode()?;
-
     println!("total entries: {}",log.end());
 
     // TODO: option for reverse?
     log.iter().for_each(|e| {
-        let v: Result<Value, serde_json::error::Error> = serde_json::from_slice(&e.data);
+        let value = serde_json::from_slice::<Value>(&e.data);
 
-        match v {
-            Ok(v) => print!("\rentry {} ok", e.offset),
+        match value {
+            Ok(_) => print!("\rentry {} ok", e.offset),
             Err(err) => { 
                 println!("\n\n===>found broken entry: {} (err: {})", e.offset, err);
-                return;
             },
         }
     });
