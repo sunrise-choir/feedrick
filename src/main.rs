@@ -291,11 +291,10 @@ fn check_log(log: OffsetLog<u32>) -> Result<(), Error> {
 
     println!("total entries: {}",log.end());
 
+    // TODO: option for reverse?
     log.iter().for_each(|e| {
         let v: Result<Value, serde_json::error::Error> = serde_json::from_slice(&e.data);
 
-
-        // _ = v.unwrap();
         match v {
             Ok(v) => print!("\rentry {} ok", e.offset),
             Err(err) => { 
