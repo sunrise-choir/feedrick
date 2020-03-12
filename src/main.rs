@@ -93,6 +93,16 @@ fn main() -> Result<(), Error> {
                         .index(1),
                 ),
         )
+        .subcommand(
+            SubCommand::with_name("check")
+                .about("check every entry")
+                .arg(
+                    Arg::with_name("FILE")
+                        .help("offset log file to view")
+                        .required(true)
+                        .index(1),
+                ),
+        )
         .get_matches();
 
     match app_m.subcommand() {
@@ -187,6 +197,15 @@ fn main() -> Result<(), Error> {
             let log = OffsetLog::<u32>::open_read_only(path)?;
             view_log(log)
         }
+
+
+        ("check", Some(sub_m)) => {
+            let path = sub_m.value_of("FILE").unwrap();
+
+            let log = OffsetLog::<u32>::open_read_only(path)?;
+            check_log(log)
+        }
+
         _ => {
             println!("{}", app_m.usage());
             Ok(())
@@ -263,6 +282,24 @@ where
     }
     println!("");
     println!("Done!");
+    Ok(())
+}
+
+fn check_log(log: OffsetLog<u32>) -> Result<(), Error> {
+    println!("total entries: {}",log.end());
+
+    // TODO: option for reverse?
+    log.iter().for_each(|e| {
+        let value = serde_json::from_slice::<Value>(&e.data);
+
+        match value {
+            Ok(_) => print!("\rentry {} ok", e.offset),
+            Err(err) => { 
+                println!("\n\n===>found broken entry: {} (err: {})", e.offset, err);
+            },
+        }
+    });
+
     Ok(())
 }
 
