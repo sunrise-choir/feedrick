@@ -1,9 +1,9 @@
 use std::fs::OpenOptions;
 use std::io::{self, stdin, stdout, Write};
-use std::path::Path;
+use std::path::PathBuf;
 
-use clap::{App, Arg, SubCommand};
 use rayon::prelude::*;
+use structopt::StructOpt;
 
 use flumedb::flume_log::{Error, FlumeLog};
 use flumedb::log_entry::LogEntry;
@@ -15,111 +15,80 @@ use termion::event::Key;
 use termion::input::TermRead;
 use termion::raw::IntoRawMode;
 
+#[derive(StructOpt)]
+#[structopt(
+    name = "feedrick",
+    author = "Sunrise Choir (sunrisechoir.com)",
+    about = "ssb flumedb offset log utilities",
+    version = "0.2"
+)]
+
+enum Opt {
+    #[structopt(about = "Verify that all messages parse as json")]
+    Check {
+        #[structopt(parse(from_os_str))]
+        in_path: PathBuf,
+    },
+
+    #[structopt(about = "Copy the feed for a single id into a separate file.")]
+    Extract {
+        /// source offset log file (eg. "~/.ssb/log.offset")
+        #[structopt(long, short, name = "in", parse(from_os_str))]
+        in_path: PathBuf,
+        /// Destination path
+        #[structopt(long, short, name = "out", parse(from_os_str))]
+        out_path: PathBuf,
+        /// Overwrite output file, if it exists
+        #[structopt(long)]
+        overwrite: bool,
+
+        /// feed (user) id (eg. "@N/vWpVVdD...")
+        #[structopt(long, short)]
+        feed: String,
+
+        /// Output a log file containing all feeds *except* the specified id.
+        #[structopt(long)]
+        invert: bool,
+    },
+
+    #[structopt(about = "Copy all the feeds and sort by asserted time")]
+    Sort {
+        /// source offset log file (eg. "~/.ssb/log.offset")
+        #[structopt(long, short, name = "in", parse(from_os_str))]
+        in_path: PathBuf,
+        /// Destination path
+        #[structopt(long, short, name = "out", parse(from_os_str))]
+        out_path: PathBuf,
+        /// Overwrite output file, if it exists
+        #[structopt(long)]
+        overwrite: bool,
+    },
+
+    #[structopt(about = "View a flumedb offset log file")]
+    View {
+        #[structopt(parse(from_os_str))]
+        in_path: PathBuf,
+    },
+}
+
 fn main() -> Result<(), Error> {
-    let app_m = App::new("feedrick")
-        .version("0.1")
-        .author("Sunrise Choir (sunrisechoir.com)")
-        .about("ssb flumedb offset log utilities")
-        .subcommand(
-            SubCommand::with_name("sort")
-                .about("Copy all the feeds and sort by asserted time")
-                .arg(
-                    Arg::with_name("in")
-                        .long("in")
-                        .short("i")
-                        .required(true)
-                        .takes_value(true)
-                        .help("source offset log file"),
-                )
-                .arg(
-                    Arg::with_name("out")
-                        .long("out")
-                        .short("o")
-                        .required(true)
-                        .takes_value(true)
-                        .help("destination path"),
-                )
-                .arg(
-                    Arg::with_name("overwrite")
-                        .long("overwrite")
-                        .help("Overwrite output file, if it exists."),
-                ),
-        )
-        .subcommand(
-            SubCommand::with_name("extract")
-                .about("Copy the feed for a single id into a separate file.")
-                .arg(
-                    Arg::with_name("in")
-                        .long("in")
-                        .short("i")
-                        .required(true)
-                        .takes_value(true)
-                        .help("source offset log file"),
-                )
-                .arg(
-                    Arg::with_name("out")
-                        .long("out")
-                        .short("o")
-                        .required(true)
-                        .takes_value(true)
-                        .help("destination path"),
-                )
-                .arg(
-                    Arg::with_name("id")
-                        .long("feed")
-                        .short("f")
-                        .required(true)
-                        .takes_value(true)
-                        .help("feed (user) id (eg. \"@N/vWpVVdD...\""),
-                )
-                .arg(
-                    Arg::with_name("overwrite")
-                        .long("overwrite")
-                        .help("Overwrite output file, if it exists."),
-                )
-                .arg(
-                    Arg::with_name("invert")
-                        .long("invert")
-                        .help("Output a log file containing all feeds *but* the specified id."),
-                ),
-        )
-        .subcommand(
-            SubCommand::with_name("view")
-                .about("View a flumedb offset log file")
-                .arg(
-                    Arg::with_name("FILE")
-                        .help("offset log file to view")
-                        .required(true)
-                        .index(1),
-                ),
-        )
-        .subcommand(
-            SubCommand::with_name("check")
-                .about("check every entry")
-                .arg(
-                    Arg::with_name("FILE")
-                        .help("offset log file to view")
-                        .required(true)
-                        .index(1),
-                ),
-        )
-        .get_matches();
+    match Opt::from_args() {
+        Opt::Check { in_path } => check_log(OffsetLog::<u32>::open_read_only(in_path)?),
 
-    match app_m.subcommand() {
-        ("extract", Some(sub_m)) => {
-            let in_path = sub_m.value_of("in").unwrap();
-            let out_path = sub_m.value_of("out").unwrap();
-            let feed_id = sub_m.value_of("id").unwrap();
-            let overwrite = sub_m.is_present("overwrite");
-            let invert = sub_m.is_present("invert");
-
-            if !overwrite && Path::new(out_path).exists() {
-                eprintln!("Output path `{}` exists.", out_path);
+        Opt::Extract {
+            in_path,
+            out_path,
+            overwrite,
+            feed,
+            invert,
+        } => {
+            if !overwrite && out_path.exists() {
+                eprintln!("Output path `{:?}` exists.", out_path);
                 eprintln!("Use `--overwrite` option to overwrite.");
                 return Ok(());
             }
 
-            let in_log = OffsetLog::<u32>::open_read_only(in_path)?;
+            let in_log = OffsetLog::<u32>::open_read_only(&in_path)?;
             if in_log.end() == 0 {
                 eprintln!("Input offset log file is empty.");
                 return Ok(());
@@ -133,23 +102,23 @@ fn main() -> Result<(), Error> {
 
             let out_log = OffsetLog::<u32>::from_file(file)?;
 
-            println!("Copying feed id: {}", feed_id);
-            eprintln!(" from offset log at path:     {}", in_path);
-            eprintln!(" into new offset log at path: {}", out_path);
+            println!("Copying feed id: {}", feed);
+            eprintln!(" from offset log at path:     {}", in_path.display());
+            eprintln!(" into new offset log at path: {}", out_path.display());
 
             if invert {
-                copy_log_entries_using_author(in_log, out_log, |id| id != feed_id)
+                copy_log_entries_using_author(in_log, out_log, |id| id != feed)
             } else {
-                copy_log_entries_using_author(in_log, out_log, |id| id == feed_id)
+                copy_log_entries_using_author(in_log, out_log, |id| id == feed)
             }
         }
-        ("sort", Some(sub_m)) => {
-            let in_path = sub_m.value_of("in").unwrap();
-            let out_path = sub_m.value_of("out").unwrap();
-            let overwrite = sub_m.is_present("overwrite");
-
-            if !overwrite && Path::new(out_path).exists() {
-                eprintln!("Output path `{}` exists.", out_path);
+        Opt::Sort {
+            in_path,
+            out_path,
+            overwrite,
+        } => {
+            if !overwrite && out_path.exists() {
+                eprintln!("Output path `{}` exists.", out_path.display());
                 eprintln!("Use `--overwrite` option to overwrite.");
                 return Ok(());
             }
@@ -162,14 +131,14 @@ fn main() -> Result<(), Error> {
 
             let mut out_log = OffsetLog::<u32>::from_file(file)?;
 
-            let in_log = OffsetLog::<u32>::open_read_only(in_path)?;
+            let in_log = OffsetLog::<u32>::open_read_only(&in_path)?;
             if in_log.end() == 0 {
                 eprintln!("Input offset log file is empty.");
                 return Ok(());
             }
 
-            eprintln!(" from offset log at path:     {}", in_path);
-            eprintln!(" into new offset log at path: {}", out_path);
+            eprintln!(" from offset log at path:     {}", in_path.display());
+            eprintln!(" into new offset log at path: {}", out_path.display());
 
             let mut entries = in_log
                 .iter()
@@ -191,25 +160,7 @@ fn main() -> Result<(), Error> {
             Ok(())
         }
 
-        ("view", Some(sub_m)) => {
-            let path = sub_m.value_of("FILE").unwrap();
-
-            let log = OffsetLog::<u32>::open_read_only(path)?;
-            view_log(log)
-        }
-
-
-        ("check", Some(sub_m)) => {
-            let path = sub_m.value_of("FILE").unwrap();
-
-            let log = OffsetLog::<u32>::open_read_only(path)?;
-            check_log(log)
-        }
-
-        _ => {
-            println!("{}", app_m.usage());
-            Ok(())
-        }
+        Opt::View { in_path } => view_log(OffsetLog::<u32>::open_read_only(in_path)?),
     }
 }
 
@@ -286,7 +237,7 @@ where
 }
 
 fn check_log(log: OffsetLog<u32>) -> Result<(), Error> {
-    println!("total entries: {}",log.end());
+    println!("total entries: {}", log.end());
 
     // TODO: option for reverse?
     log.iter().for_each(|e| {
@@ -294,9 +245,9 @@ fn check_log(log: OffsetLog<u32>) -> Result<(), Error> {
 
         match value {
             Ok(_) => print!("\rentry {} ok", e.offset),
-            Err(err) => { 
+            Err(err) => {
                 println!("\n\n===>found broken entry: {} (err: {})", e.offset, err);
-            },
+            }
         }
     });
 
